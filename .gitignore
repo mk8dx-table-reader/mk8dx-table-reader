@@ -5,3 +5,5 @@ mk8dx_table_reader.egg-info*
 dist*
 __pycache__*
 build*
+venv
+.venv
