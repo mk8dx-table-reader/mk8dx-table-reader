@@ -1,11 +1,15 @@
+"""
+ONNX Runtime version of fullreader.py
+This file uses ONNX Runtime instead of TensorFlow/Keras for production deployment.
+No TensorFlow dependencies required!
+"""
 import cv2
 import os
 from pathlib import Path
-import keras
 import sys
 relative_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(relative_dir)
-import kerasUseModelScores as KS
+import kerasUseModelScores as KS  # Now using ONNX version
 import yoloUseModelTable as YTable
 import yoloUseModelPlayers as YPlayers
 import error_handling as er
@@ -14,7 +18,6 @@ import time
 import PIL
 import numpy as np
 from ultralytics import YOLO
-
 
 
 class Fullreader:
@@ -26,12 +29,10 @@ class Fullreader:
         readerEasyOcr (easyocr.Reader): EasyOCR reader instance for text recognition. 
             Used to read player and team names from cropped images of players.
             
-        modelScore (keras.Model): Custom Keras model for recognizing scores.
+        modelScore (onnxruntime.InferenceSession): ONNX Runtime session for recognizing scores.
             Used to recognize scores from cropped images of players.
         
-        modelPosition (keras.Model): Custom Keras model for recognizing positions.
-            Used to recognize positions from cropped images of players. 
-            (NOTE: This model is currently NULL because esayocr worked just fine)
+        modelPosition: Currently NULL because easyocr worked just fine
         
         modelTablePath (str): Path to the custom YOLO model for table detection.
             Used to recognize the table area in the image, and the number of players in that table if there is one
@@ -42,12 +43,16 @@ class Fullreader:
     def __init__(self):
         # Initialize the EasyOCR reader for English language
         self.readerEasyOcr = easyocr.Reader(['en'], gpu=True)
+        
+        # Load ONNX model for score recognition
         if relative_dir:
-            self.modelScore = keras.models.load_model(relative_dir + '/models/number_recognition_model.h5', compile=False)  # compile=False if custom loss was used
+            onnx_model_path = relative_dir + '/models/number_recognition_model.onnx'
+            self.modelScore = KS.load_model_for_inference(onnx_model_path)
             self.modelTablePath = YOLO(relative_dir + '/models/detectTable.pt')
             self.modelPlayersPath = YOLO(relative_dir + '/models/detectPlayers.pt')
         else:
-            self.modelScore = keras.models.load_model('mk8dx_table_reader/models/number_recognition_model.h5', compile=False)  # compile=False if custom loss was used
+            onnx_model_path = 'mk8dx_table_reader/models/number_recognition_model.onnx'
+            self.modelScore = KS.load_model_for_inference(onnx_model_path)
             self.modelTablePath = YOLO('mk8dx_table_reader/models/detectTable.pt')
             self.modelPlayersPath = YOLO('mk8dx_table_reader/models/detectPlayers.pt')
 
@@ -121,13 +126,13 @@ class Fullreader:
         :return: The recognized single score from the cropped player image.
         :rtype: str
         """
-        # Use the model to predict the scores
-        # The kerasUseModelScores module will handle grayscale conversion internally
+        # Use the ONNX model to predict the scores
         try :
             scores = KS.recognize_number_from_image(self.modelScore, tableIMG)
             return scores
         except ValueError as e:
             raise ValueError(f"Error processing scores: {e}")
+
 
 if __name__ == "__main__":
     # Example usage of Fullreader
@@ -148,11 +153,3 @@ if __name__ == "__main__":
             extractedTableString= fullreader.fullOCR(img)
         except ValueError as e:
             print(f"Error processing {image_file}: {e}")
-            continue
-        if extractedTableString is None:
-            print(f"No table found in {image_file}")
-            continue
-        for i,player in enumerate(extractedTableString[0]):
-            # Assuming result is a list of player data
-            print (player + " |" + str(extractedTableString[1][i]))
-        

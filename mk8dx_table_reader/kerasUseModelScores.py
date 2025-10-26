@@ -1,10 +1,13 @@
+"""
+ONNX Runtime version of kerasUseModelScores.py
+This file replaces TensorFlow/Keras inference with ONNX Runtime for production use.
+No TensorFlow dependencies required!
+"""
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
 import cv2
 import os
 import PIL
+import onnxruntime as ort
 
 # Define the character mapping (same as during training)
 CHARACTERS = '0123456789'
@@ -12,17 +15,6 @@ char_to_idx = {char: idx for idx, char in enumerate(CHARACTERS)}
 idx_to_char = {idx: char for idx, char in enumerate(CHARACTERS)}
 NUM_CLASSES = len(CHARACTERS) + 1  # 10 characters + 1 for CTC blank = 11
 
-class CTCLayer(layers.Layer):
-    """CTC layer for model loading - simplified version"""
-    def __init__(self, name=None):
-        super().__init__(name=name)
-    
-    def call(self, inputs):
-        # During inference, just return the predictions
-        if len(inputs) == 1:
-            return inputs[0]
-        # During training (not used in inference)
-        return inputs[1]
 
 def preprocess_image(img, target_height=64):
     """Preprocess an image file for prediction - updated for CTC model"""
@@ -50,89 +42,90 @@ def preprocess_image(img, target_height=64):
     img_normalized = np.expand_dims(np.expand_dims(img_normalized, axis=0), axis=-1)
     
     return img_normalized
-def decode_predictions(pred):
-    """Convert model output to text predictions using CTC decode"""
+
+
+def decode_predictions_numpy(pred):
+    """
+    Convert model output to text predictions using CTC decode (NumPy implementation).
+    This replaces TensorFlow's CTC decoder with a pure NumPy greedy decoder.
+    
+    Args:
+        pred: Model predictions of shape (batch_size, time_steps, num_classes)
+    
+    Returns:
+        List of predicted text strings
+    """
     batch_size = pred.shape[0]
-    
-    # Use tf.nn.ctc_greedy_decoder instead of tf.keras.backend.ctc_decode
-    # tf.nn.ctc_greedy_decoder expects (time_major=True): (time_steps, batch_size, num_classes)
-    inputs_tm = tf.transpose(pred, [1, 0, 2])  # (time_steps, batch_size, num_classes)
-    sequence_length = tf.constant([pred.shape[1]] * batch_size)  # All sequences have same length
-    
-    # Use CTC greedy decoder with explicit blank index
-    decoded, _ = tf.nn.ctc_greedy_decoder(
-        inputs_tm,
-        sequence_length=sequence_length,
-        blank_index=10  # CTC blank at index 10 (NUM_CLASSES - 1)
-    )
-    
-    # Convert sparse tensor to dense
-    dense_decoded = tf.sparse.to_dense(decoded[0]).numpy()
-    
-    # Convert indices to characters
     predicted_labels = []
+    
     for i in range(batch_size):
-        text = ''
-        for idx in dense_decoded[i]:
-            if idx >= 0 and idx < len(CHARACTERS):  # Valid character indices (0-9)
-                text += CHARACTERS[idx]
-        predicted_labels.append(text)
+        # Get the most likely class for each timestep (greedy decoding)
+        sequence = np.argmax(pred[i], axis=-1)  # Shape: (time_steps,)
         
+        # CTC decoding: remove consecutive duplicates and blank tokens
+        decoded = []
+        previous_token = None
+        
+        for token in sequence:
+            # Skip blank token (index 10)
+            if token == 10:  # CTC blank
+                previous_token = None
+                continue
+            
+            # Skip consecutive duplicates
+            if token != previous_token:
+                if 0 <= token < len(CHARACTERS):  # Valid character
+                    decoded.append(CHARACTERS[token])
+                previous_token = token
+        
+        predicted_labels.append(''.join(decoded))
+    
     return predicted_labels
 
+
 def load_model_for_inference(model_path):
-    """Load the CTC model for inference"""
+    """
+    Load the ONNX model for inference using ONNX Runtime.
+    
+    Args:
+        model_path: Path to the .onnx model file
+    
+    Returns:
+        ONNX Runtime inference session
+    """
     try:
-        # Try loading as inference model first (should work with the new architecture)
-        model = keras.models.load_model(model_path, compile=False, 
-                                       custom_objects={'CTCLayer': CTCLayer})
-        return model
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        print("Attempting to build model architecture manually...")
+        # Create ONNX Runtime session
+        # Use CPUExecutionProvider for CPU inference or CUDAExecutionProvider for GPU
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        session = ort.InferenceSession(model_path, providers=providers)
         
-        # If loading fails, build the inference model manually
-        return build_inference_model()
+        print(f"ONNX model loaded successfully from: {model_path}")
+        print(f"Available providers: {ort.get_available_providers()}")
+        print(f"Using providers: {session.get_providers()}")
+        
+        # Print input/output info
+        input_info = session.get_inputs()[0]
+        output_info = session.get_outputs()[0]
+        print(f"Input name: {input_info.name}, shape: {input_info.shape}, dtype: {input_info.type}")
+        print(f"Output name: {output_info.name}, shape: {output_info.shape}, dtype: {output_info.type}")
+        
+        return session
+    except Exception as e:
+        print(f"Error loading ONNX model: {e}")
+        raise
 
-def build_inference_model():
-    """Build inference model matching the training architecture"""
-    input_shape = (64, 80, 1)
-    
-    # Input layer for images
-    input_img = keras.Input(shape=input_shape, name='image')
-    
-    # CNN feature extraction (must match training exactly)
-    x = keras.layers.Conv2D(64, (3, 3), activation='relu', padding='same', 
-                           kernel_initializer='he_normal')(input_img)
-    x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.MaxPooling2D((2, 2))(x)
-    
-    x = keras.layers.Conv2D(128, (3, 3), activation='relu', padding='same',
-                           kernel_initializer='he_normal')(x)
-    x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.MaxPooling2D((2, 2))(x)
-    
-    x = keras.layers.BatchNormalization()(x)
-    x = keras.layers.MaxPooling2D((2, 1))(x)  # Only downsample height
-    
-    # Reshape for RNN - create sequence from width dimension
-    new_shape = (input_shape[1] // 4, (input_shape[0] // 8) * 128)  # (width_steps, features)
-    x = keras.layers.Reshape(new_shape)(x)
-    
-    # LSTM layers
-    x = keras.layers.Bidirectional(keras.layers.LSTM(128, return_sequences=True, 
-                                                     recurrent_dropout=0.1,
-                                                     kernel_initializer='glorot_uniform',
-                                                     recurrent_initializer='orthogonal'))(x)
-    
-    # Dense layer before CTC
-    x = keras.layers.Dense(NUM_CLASSES, kernel_initializer='glorot_uniform', dtype='float32')(x)
-    
-    model = keras.Model(inputs=input_img, outputs=x)
-    return model
 
-def recognize_number_from_image(model, image):
-    """Recognize number in a given image using CTC model"""
+def recognize_number_from_image(model_session, image):
+    """
+    Recognize number in a given image using ONNX Runtime.
+    
+    Args:
+        model_session: ONNX Runtime inference session
+        image: PIL Image or OpenCV image (grayscale)
+    
+    Returns:
+        Predicted number as string
+    """
     # Convert PIL image to OpenCV format if needed
     if isinstance(image, PIL.Image.Image):
         # Convert PIL to numpy array first
@@ -148,56 +141,62 @@ def recognize_number_from_image(model, image):
         else:
             opencvImage = numpy_image  # Already grayscale
     elif isinstance(image, str):
-        # If it's a file path
+        # Load from file path
         opencvImage = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
+        if opencvImage is None:
+            raise ValueError(f"Could not load image from path: {image}")
     else:
-        # Assume it's already a numpy array
+        # Assume it's already an OpenCV image
         opencvImage = image
         if len(opencvImage.shape) == 3:
-            if opencvImage.shape[2] == 3:  # BGR
-                opencvImage = cv2.cvtColor(opencvImage, cv2.COLOR_BGR2GRAY)
-            elif opencvImage.shape[2] == 4:  # BGRA
-                opencvImage = cv2.cvtColor(opencvImage, cv2.COLOR_BGRA2GRAY)
-            else:
-                opencvImage = opencvImage[:, :, 0]  # Take first channel
-
-    processed_img = preprocess_image(opencvImage)
-
-    if processed_img is None:
-        return "Error processing image"
+            opencvImage = cv2.cvtColor(opencvImage, cv2.COLOR_BGR2GRAY)
     
-    # Make prediction
-    pred = model.predict(processed_img, verbose=False)
+    # Preprocess the image
+    preprocessed = preprocess_image(opencvImage)
     
-    # Decode the prediction
-    result = decode_predictions(pred)
+    # Run inference
+    input_name = model_session.get_inputs()[0].name
+    output_name = model_session.get_outputs()[0].name
     
-    return result[0] if result else ""
+    # ONNX Runtime expects numpy arrays
+    predictions = model_session.run([output_name], {input_name: preprocessed})[0]
+    
+    # Decode predictions using numpy-based CTC decoder
+    decoded_texts = decode_predictions_numpy(predictions)
+    
+    return decoded_texts[0] if decoded_texts else ""
 
-# Example usage
+
+# Maintain backward compatibility - these functions can be called from existing code
+def build_inference_model():
+    """Deprecated: No longer needed with ONNX Runtime"""
+    raise NotImplementedError(
+        "This function is deprecated when using ONNX Runtime. "
+        "Use load_model_for_inference() instead with an ONNX model path."
+    )
+
+
 if __name__ == "__main__":
+    # Example usage
+    print("ONNX Runtime Score Recognition Module")
+    print("=" * 50)
     
-    # Load the saved model
-    print("Loading CTC model...")
-    model = load_model_for_inference('number_recognition_model.h5')
-    print("Model loaded successfully!")
+    # Check if ONNX model exists
+    onnx_model_path = "mk8dx_table_reader/models/number_recognition_model.onnx"
     
-    test_dir = "dataset/croppedScores/"
-    if os.path.exists(test_dir):
-        for img_file in os.listdir(test_dir):
-            if img_file.endswith(('.png', '.jpg', '.jpeg')):
-                img_path = os.path.join(test_dir, img_file)
-                try:
-                    img = PIL.Image.open(img_path)
-                    number = recognize_number_from_image(model, img)
-                    print(f"Image {img_file}: {number}")
-                except Exception as e:
-                    print(f"Error processing {img_file}: {e}")
+    if not os.path.exists(onnx_model_path):
+        print(f"ERROR: ONNX model not found at: {onnx_model_path}")
+        print("Please run the conversion script first to create the ONNX model.")
     else:
-        print(f"Test directory {test_dir} not found.")
+        # Load model
+        session = load_model_for_inference(onnx_model_path)
         
-        # Test with a synthetic image if no test directory
-        print("Testing with synthetic image...")
-        test_img = np.random.randint(0, 255, (64, 80), dtype=np.uint8)
-        result = recognize_number_from_image(model, test_img)
-        print(f"Synthetic image result: {result}")
+        # Test with a sample image if available
+        test_image_path = "dataset/croppedScores/1.png"
+        if os.path.exists(test_image_path):
+            print(f"\nTesting with image: {test_image_path}")
+            result = recognize_number_from_image(session, test_image_path)
+            print(f"Recognized number: {result}")
+        else:
+            print(f"\nNo test image found at: {test_image_path}")
+            print("Model loaded successfully and ready for inference!")
