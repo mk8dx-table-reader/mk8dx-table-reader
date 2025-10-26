@@ -1,5 +1,5 @@
 # mk8dx-table-reader
-Welcome to this project aming at making a full OCR program able to convert mariokar 8 deluxe end screen results into a esay to work with text output.
+Welcome to this project aming at making a full OCR program able to convert mariokar 8 deluxe end screen results into a easy to work with text output.
 
 ## simple install
 ```python
