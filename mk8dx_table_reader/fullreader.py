@@ -2,6 +2,7 @@
 ONNX Runtime version of fullreader.py
 This file uses ONNX Runtime instead of TensorFlow/Keras for production deployment.
 No TensorFlow dependencies required!
+Updated to use ONNX-based EasyOCR for lightweight inference.
 """
 import cv2
 import os
@@ -10,15 +11,18 @@ import sys
 relative_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(relative_dir)
 import kerasUseModelScores as KS  # Now using ONNX version
-import yoloUseModelTable as YTable
-import yoloUseModelPlayers as YPlayers
+from detectors import yoloUseModelTable as YTable
+import detectors.yoloUseModelPlayers as YPlayers
+# import detectors.base_table_detector as BTD
+# from detectors import base_player_detector as BPD
 import error_handling as er
-import easyocr
+import torchfree_ocr as easyocr
+# import easyocr
+
 import time
 import PIL
 import numpy as np
 from ultralytics import YOLO
-
 
 class Fullreader:
     """
@@ -26,7 +30,8 @@ class Fullreader:
     NOTE: As for now the program only works with grayscale images.
        
     Attributes:
-        readerEasyOcr (easyocr.Reader): EasyOCR reader instance for text recognition. 
+        readerEasyOcr (easyocr.Reader or easyocr_onnx.Reader): EasyOCR reader instance for text recognition. 
+            Uses ONNX-based implementation when available for lightweight inference without PyTorch.
             Used to read player and team names from cropped images of players.
             
         modelScore (onnxruntime.InferenceSession): ONNX Runtime session for recognizing scores.
@@ -37,34 +42,43 @@ class Fullreader:
         modelTablePath (str): Path to the custom YOLO model for table detection.
             Used to recognize the table area in the image, and the number of players in that table if there is one
         
-        modelPlayersPath (str): Path to the custom YOLO model for player detection.
+        playerDetector (BasePlayerDetector): Instance of a player detector (ONNX or YOLO).
             Used to recognize player areas in the image, such as their positions, tags, names, and scores.
     """
     def __init__(self):
         # Initialize the EasyOCR reader for English language
-        self.readerEasyOcr = easyocr.Reader(['en'], gpu=True)
-        
+        # Will use ONNX version if available, otherwise falls back to PyTorch version
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.readerEasyOcr = easyocr.Reader(['en'])
         # Load ONNX model for score recognition
         if relative_dir:
             onnx_model_path = relative_dir + '/models/number_recognition_model.onnx'
             self.modelScore = KS.load_model_for_inference(onnx_model_path)
-            self.modelTablePath = YOLO(relative_dir + '/models/detectTable.pt')
-            self.modelPlayersPath = YOLO(relative_dir + '/models/detectPlayers.pt')
+            
+            # Initialize Table Detector using YOLO with ONNX backend
+            self.modelTable = YOLO(relative_dir + '/models/detectTable.pt')
+            
+            # Initialize Player Detector using YOLO with ONNX backend
+            self.modelPlayers = YOLO(relative_dir + '/models/detectPlayers.pt')
         else:
             onnx_model_path = 'mk8dx_table_reader/models/number_recognition_model.onnx'
             self.modelScore = KS.load_model_for_inference(onnx_model_path)
-            self.modelTablePath = YOLO('mk8dx_table_reader/models/detectTable.pt')
-            self.modelPlayersPath = YOLO('mk8dx_table_reader/models/detectPlayers.pt')
+            
+            # Initialize Table Detector using YOLO with ONNX backend
+            self.modelTable = YOLO('mk8dx_table_reader/models/detectTable.onnx')
+            
+            # Initialize Player Detector using YOLO with ONNX backend
+            self.modelPlayers = YOLO('mk8dx_table_reader/models/detectPlayers.onnx')
 
-    def fullOCR(self, img, teams = "FFA"):
+    def fullOCR(self, img, score_error_exceptions=False, **kwargs):
         """_summary_
 
         :param img: PIL Image object to be processed.
         :type img: PIL.Image.Image
+        :param score_error_exceptions: Whether to enable error handling for scores (for now), defaults to False. If True, will raise DetectionError if the detection went wrong.
 
         :raises ValueError: If the image cannot be processed, a ValueError is raised.
         """
-        
         # Keep the original PIL Image for cropping operations
         img_pil = img
         
@@ -83,22 +97,19 @@ class Fullreader:
         
         # Convert grayscale back to PIL Image for YOLO processing
         img_gray_pil = PIL.Image.fromarray(img_gray)
-        
-        players_data = []
-        
+                
         # Use grayscale image for YOLO table detection
-        first_found, second_boxes = YTable.process_detections(img_gray_pil, self.modelTablePath)
+        first_found, second_boxes = YTable.process_detections(img_gray_pil, self.modelTable)
         box = first_found
         
-        
-        if first_found is not None: 
-            tableIMG = img_gray_pil.crop(box)
-            
+        if first_found is not None:             
             player_names = []
             player_scores = []
+            # order second_boxes in the list from top to bottom according to their y coordinate
+            second_boxes = sorted(second_boxes, key=lambda b: b[1])
             for i, box in enumerate(second_boxes):
                 playerIMG = img_gray_pil.crop(box)
-                name, score = YPlayers.process_detections(playerIMG, self.modelPlayersPath)
+                name, score = YPlayers.process_detections(playerIMG, self.modelPlayers)
                 
                 name_results = self.readerEasyOcr.readtext(np.array(playerIMG.crop(name)))
                 if name_results:
@@ -114,8 +125,8 @@ class Fullreader:
             return None # use exceptions
         for i in range (len(player_scores)):
             player_scores[i] = player_scores[i]
-            
-        # player_scores = er.smart_correct_scores(player_scores)
+        if score_error_exceptions:
+            er.error_handling_scores(player_scores)
         return player_names, player_scores
 
     def getScores(self, tableIMG):
@@ -150,6 +161,10 @@ if __name__ == "__main__":
         # Load the image using PIL
         img = PIL.Image.open(image_path)
         try :
-            extractedTableString= fullreader.fullOCR(img)
+            extractedTableString= fullreader.fullOCR(img, score_error_exceptions=True)
         except ValueError as e:
             print(f"Error processing {image_file}: {e}")
+        if extractedTableString is not None:
+            names, scores = extractedTableString
+            print(f"Extracted Names: {names}")
+            print(f"Extracted Scores: {scores}")

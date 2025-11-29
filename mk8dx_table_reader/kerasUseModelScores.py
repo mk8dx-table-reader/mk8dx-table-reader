@@ -19,6 +19,26 @@ NUM_CLASSES = len(CHARACTERS) + 1  # 10 characters + 1 for CTC blank = 11
 def preprocess_image(img, target_height=64):
     """Preprocess an image file for prediction - updated for CTC model"""
     
+    avgColor = np.mean(img, axis=(0,1))
+
+    if float(avgColor) > 175:
+        # invert colors
+        img = 255 - img
+        # img = cv2.addWeighted(img, 2, np.zeros(img.shape, img.dtype), 0,25)
+        # img = cv2.addWeighted(img, 1, np.zeros(img.shape, img.dtype), 0,25)
+        
+    # Brightness normalization - normalize to target brightness level
+    target_brightness = 160.0  # Target average brightness (0-255 scale)
+    current_brightness = np.mean(img)
+    
+    if current_brightness > 0:  # Avoid division by zero
+        brightness_factor = target_brightness / current_brightness
+        img = np.clip(img * brightness_factor, 0, 255).astype(np.uint8)
+    # cv2.imshow("Debug Image", img if isinstance(img, str) else np.array(img))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+    
+    
     # Calculate new width to maintain aspect ratio
     h, w = img.shape
     target_width = int(w * (target_height / h))
@@ -40,7 +60,9 @@ def preprocess_image(img, target_height=64):
     
     # Add batch and channel dimensions for model input (must match training exactly!)
     img_normalized = np.expand_dims(np.expand_dims(img_normalized, axis=0), axis=-1)
-    
+    # cv2.imshow("Debug Image", img_normalized if isinstance(img_normalized, str) else np.array(img))
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
     return img_normalized
 
 
