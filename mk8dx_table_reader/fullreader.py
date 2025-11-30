@@ -16,9 +16,14 @@ import detectors.yoloUseModelPlayers as YPlayers
 # import detectors.base_table_detector as BTD
 # from detectors import base_player_detector as BPD
 import error_handling as er
-import torchfree_ocr as easyocr
-# import easyocr
-
+import exceptions.LoadImgException as LoadImgException
+import mk8dx_table_reader.exceptions.PlayersNotFoundException as PlayersNotFoundException
+import mk8dx_table_reader.exceptions.TableNotFoundException as TableNotFoundException
+try:
+    import easyocr
+except ImportError:
+    import torchfree_ocr as easyocr
+import warnings
 import time
 import PIL
 import numpy as np
@@ -100,29 +105,35 @@ class Fullreader:
                 
         # Use grayscale image for YOLO table detection
         first_found, second_boxes = YTable.process_detections(img_gray_pil, self.modelTable)
+        if first_found is None:
+            raise TableNotFoundException.TableNotFoundException()
+        if not second_boxes or len(second_boxes) == 0:
+            raise PlayersNotFoundException.PlayersNotFoundException()
         box = first_found
         
-        if first_found is not None:             
-            player_names = []
-            player_scores = []
-            # order second_boxes in the list from top to bottom according to their y coordinate
-            second_boxes = sorted(second_boxes, key=lambda b: b[1])
-            for i, box in enumerate(second_boxes):
-                playerIMG = img_gray_pil.crop(box)
-                name, score = YPlayers.process_detections(playerIMG, self.modelPlayers)
+        player_names = []
+        player_scores = []
+        # order second_boxes in the list from top to bottom according to their y coordinate
+        second_boxes = sorted(second_boxes, key=lambda b: b[1])
+        for i, box in enumerate(second_boxes):
+            playerIMG = img_gray_pil.crop(box)
+            name, score = YPlayers.process_detections(playerIMG, self.modelPlayers)
+            
+            name_results = self.readerEasyOcr.readtext(np.array(playerIMG.crop(name)))
+            if name_results:
+                player_names.append(name_results[0][1])
+            else: # if easyOCR fails to recognize the name
+                player_names.append("Error")  
+            
+            try:
+                score = self.getScores(playerIMG.crop(score))
+            except Exception:  
+                None
+            if score is not None: 
+                player_scores.append(score)
+            else:
+                player_scores.append("Error")
                 
-                name_results = self.readerEasyOcr.readtext(np.array(playerIMG.crop(name)))
-                if name_results:
-                    player_names.append(name_results[0][1])
-                else: # if easyOCR fails to recognize the name
-                    player_names.append("Error")  
-                    
-                try: 
-                    player_scores.append(self.getScores(playerIMG.crop(score)))
-                except ValueError as e:
-                    player_scores.append("Error")
-        else :
-            return None # use exceptions
         for i in range (len(player_scores)):
             player_scores[i] = player_scores[i]
         if score_error_exceptions:
@@ -138,11 +149,10 @@ class Fullreader:
         :rtype: str
         """
         # Use the ONNX model to predict the scores
-        try :
-            scores = KS.recognize_number_from_image(self.modelScore, tableIMG)
-            return scores
-        except ValueError as e:
-            raise ValueError(f"Error processing scores: {e}")
+
+        scores = KS.recognize_number_from_image(self.modelScore, tableIMG)
+        return scores
+
 
 
 if __name__ == "__main__":
@@ -162,7 +172,7 @@ if __name__ == "__main__":
         img = PIL.Image.open(image_path)
         try :
             extractedTableString= fullreader.fullOCR(img, score_error_exceptions=True)
-        except ValueError as e:
+        except Exception as e:
             print(f"Error processing {image_file}: {e}")
         if extractedTableString is not None:
             names, scores = extractedTableString

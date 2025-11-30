@@ -22,8 +22,11 @@ def error_handling_scores(players):
     
     valid_scores = sum(scores_repartition_by_players[num_players])
     for i in range(num_players):
-        if players[i] == "Error" or players[i] == '':
-            raise DetectionError("Score detection error for player {}".format(i+1))
+        if players[i] == "Error" or players[i] == '' or players[i] is None:
+            warning_msg = "Score detection error for player {}".format(i+1)
+            warnings.warn(warning_msg, RuntimeWarning)
+            players[i] = -1
+            
         players[i] = int(players[i])
         
     players_scores_added_up = sum(players)
