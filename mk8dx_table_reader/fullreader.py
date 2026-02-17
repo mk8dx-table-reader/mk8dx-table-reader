@@ -150,7 +150,7 @@ class Fullreader:
         """
         # Use the ONNX model to predict the scores
 
-        scores = KS.recognize_number_from_image(self.modelScore, tableIMG)
+        scores = KS.process_img(self.modelScore, tableIMG)
         return scores
 
 
@@ -171,10 +171,14 @@ if __name__ == "__main__":
         # Load the image using PIL
         img = PIL.Image.open(image_path)
         try :
-            extractedTableString= fullreader.fullOCR(img, score_error_exceptions=True)
+            extractedTableString= fullreader.fullOCR(img, score_error_exceptions=False)
         except Exception as e:
             print(f"Error processing {image_file}: {e}")
         if extractedTableString is not None:
             names, scores = extractedTableString
             print(f"Extracted Names: {names}")
             print(f"Extracted Scores: {scores}")
+            img = np.array(img)
+            cv2.imshow("Image", img)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()

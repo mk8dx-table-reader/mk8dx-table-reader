@@ -9,6 +9,8 @@ import os
 import PIL
 import onnxruntime as ort
 
+from process_scores import ScoreProcessor
+
 # Define the character mapping (same as during training)
 CHARACTERS = '0123456789'
 char_to_idx = {char: idx for idx, char in enumerate(CHARACTERS)}
@@ -16,28 +18,50 @@ idx_to_char = {idx: char for idx, char in enumerate(CHARACTERS)}
 NUM_CLASSES = len(CHARACTERS) + 1  # 10 characters + 1 for CTC blank = 11
 
 
-def preprocess_image(img, target_height=64):
+def preprocess_image(img, target_height=40):
     """Preprocess an image file for prediction - updated for CTC model"""
     
-    avgColor = np.mean(img, axis=(0,1))
+    # avgColor = np.mean(img, axis=(0,1))
 
-    if float(avgColor) > 175:
-        # invert colors
-        img = 255 - img
-        # img = cv2.addWeighted(img, 2, np.zeros(img.shape, img.dtype), 0,25)
-        # img = cv2.addWeighted(img, 1, np.zeros(img.shape, img.dtype), 0,25)
+    # if float(avgColor) > 175:
+    #     # invert colors
+    #     img = 255 - img
+    #     lower_bound = np.array([0, 0, 0])     
+    #     upper_bound = np.array([70, 70, 70])
+    #     # img = cv2.addWeighted(img, 2, np.zeros(img.shape, img.dtype), 0,25)
+    #     # img = cv2.addWeighted(img, 1, np.zeros(img.shape, img.dtype), 0,25)
+    # else:
+    #     # lower bound and upper bound for White color
+    #     lower_bound = np.array([0, 0, 0])     
+    #     upper_bound = np.array([190, 190, 190])
         
-    # Brightness normalization - normalize to target brightness level
-    target_brightness = 160.0  # Target average brightness (0-255 scale)
-    current_brightness = np.mean(img)
+    # # cv2.imshow("Debug Image", img)
+    # # cv2.waitKey(0)
+    # # cv2.destroyAllWindows()
+    # # # Brightness normalization - normalize to target brightness level
+    # # target_brightness = 160.0  # Target average brightness (0-255 scale)
+    # # current_brightness = np.mean(img)
     
-    if current_brightness > 0:  # Avoid division by zero
-        brightness_factor = target_brightness / current_brightness
-        img = np.clip(img * brightness_factor, 0, 255).astype(np.uint8)
-    # cv2.imshow("Debug Image", img if isinstance(img, str) else np.array(img))
+    # # if current_brightness > 0:  # Avoid division by zero
+    # #     brightness_factor = target_brightness / current_brightness
+    # #     img = np.clip(img * brightness_factor, 0, 255).astype(np.uint8)
+    
+    # img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    # hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    # mask = cv2.inRange(hsv, lower_bound, upper_bound)
+
+    # mask = cv2.bitwise_not(mask)
+    # mask = cv2.GaussianBlur(mask, (3, 3), 0)
+
+    # segmented_img = cv2.bitwise_and(img, img, mask=mask)
+    # contours, hierarchy = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # mask =  cv2.drawContours(mask, contours, -1, (255, 255, 255), 1)
+
+    # cv2.imshow("Debug Image", mask)
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
-    
+    # img = mask
     
     # Calculate new width to maintain aspect ratio
     h, w = img.shape
@@ -50,17 +74,19 @@ def preprocess_image(img, target_height=64):
     img_normalized = img_resized.astype('float32') / 255.0
     
     # Pad to fixed width if necessary (use same max_width as in training)
-    max_width = 80  # Must match training
+    max_width = 30  # Must match training
     if img_normalized.shape[1] > max_width:
         img_normalized = img_normalized[:, :max_width]
     else:
-        padded_img = np.zeros((target_height, max_width), dtype=np.float32)
+        padded_img = np.ones((target_height, max_width), dtype=np.float32)  # Use ones (white) instead of zeros (black)
         padded_img[:, :img_normalized.shape[1]] = img_normalized
         img_normalized = padded_img
     
     # Add batch and channel dimensions for model input (must match training exactly!)
     img_normalized = np.expand_dims(np.expand_dims(img_normalized, axis=0), axis=-1)
-    # cv2.imshow("Debug Image", img_normalized if isinstance(img_normalized, str) else np.array(img))
+    # img_normalized = img_normalized[0, :, :, 0]
+
+    # cv2.imshow("Debug Image", img_normalized[0, :, :, 0])
     # cv2.waitKey(0)
     # cv2.destroyAllWindows()
     return img_normalized
@@ -188,6 +214,29 @@ def recognize_number_from_image(model_session, image):
     
     return decoded_texts[0] if decoded_texts else ""
 
+def process_img(model_session, img: np.ndarray) -> str:
+    """
+    Recognize all digits in a list of segmented digit images.
+    
+    Args:
+        digit_images: List of segmented digit images
+    
+    Returns:
+        String representation of the recognized number
+    """
+    scoreDigitSeparator = ScoreProcessor()  # Initialize the score processor for digit segmentation
+    digit_imgs = []
+    _ ,digit_imgs = scoreDigitSeparator.process_image(img)  # Use the score processor to handle digit segmentation and ordering
+    digits = []
+    
+    for img in digit_imgs:
+        digit = recognize_number_from_image(model_session, img)
+        if digit == -1:
+            digits.append('?')  # Unknown digit
+        else:
+            digits.append(digit)
+    
+    return ''.join(digits)
 
 # Maintain backward compatibility - these functions can be called from existing code
 def build_inference_model():
