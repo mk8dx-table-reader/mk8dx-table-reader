@@ -1,0 +1,38 @@
+[project]
+name = "mk8dx-table-reader"
+version = "0.6.5"
+description = "A package to extract player names and scores from MK8DX tables using YOLO and EasyOCR."
+authors = [
+    { name = "Julien ABADIE", email = "julien.abadie@etu.uca.fr" }
+]
+readme = "README.md"
+requires-python = ">=3.11.11"
+dependencies = [
+    "pillow>=10.0.0",
+    "opencv-python-headless>=4.8.0",
+    "numpy>=1.24.0",
+    "setuptools>=68.0.0",
+    "onnxruntime>=1.16.0",
+    "ultralytics>=8.0.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "easyocr>=1.7.0",
+]
+cpu = [
+    "torchfree_ocr>=1.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/PrizeWhipser/shortcat.tips"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mk8dx_table_reader"]
+include = [
+    "mk8dx_table_reader/models/*",
+]

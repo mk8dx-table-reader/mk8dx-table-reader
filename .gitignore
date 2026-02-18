@@ -7,5 +7,7 @@ __pycache__*
 build*
 venv
 .venv
+uv.lock
+.python-version
 mk8dx_table_reader/models/craft_mlt_25k_jpqd.onnx
 mk8dx_table_reader/models/english_g2_jpqd.onnx
