@@ -35,10 +35,8 @@ setup(
         "pillow",
         "opencv-python-headless",
         "easyocr",
-        "keras",
         "numpy",
         "setuptools",
-        "tensorflow",
         "ultralytics",
     ],
 )
